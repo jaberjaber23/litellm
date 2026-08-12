@@ -9,6 +9,8 @@ DEFAULT_DEPRECATION_WARN_DAYS: Final = 30
 
 DEFAULT_DEPRECATION_CHECK_INTERVAL_SECONDS: Final = 24 * 60 * 60
 
+DEFAULT_DEPRECATION_ROUTER_WAIT_SECONDS: Final = 5
+
 DeprecationStatus = Literal["upcoming", "imminent", "deprecated"]
 
 

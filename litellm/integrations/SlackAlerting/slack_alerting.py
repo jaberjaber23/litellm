@@ -43,6 +43,7 @@ from litellm.repositories.user_repository import UserRepository
 from litellm.types.integrations.slack_alerting import *
 from litellm.types.proxy.model_deprecation import (
     DEFAULT_DEPRECATION_CHECK_INTERVAL_SECONDS,
+    DEFAULT_DEPRECATION_ROUTER_WAIT_SECONDS,
 )
 
 from ..email_templates.templates import *
@@ -1080,10 +1081,18 @@ Model Info:
     async def _run_scheduled_deprecation_check(
         self, get_llm_router: Callable[[], Router | None] = _proxy_llm_router
     ) -> None:
-        """Alert once on startup, then daily, re-reading the router and alert types each pass"""
+        """Alert once on startup, then daily, re-reading the router and alert types each pass.
+
+        Config load can start this loop before `llm_router` is assigned. Poll on a short
+        interval while it's unset so the first real alert isn't postponed a full day.
+        """
         while True:
+            router: Final = get_llm_router()
+            if router is None:
+                await asyncio.sleep(DEFAULT_DEPRECATION_ROUTER_WAIT_SECONDS)
+                continue
             try:
-                await self.send_model_deprecation_alert(llm_router=get_llm_router())
+                await self.send_model_deprecation_alert(llm_router=router)
             except Exception as e:  # noqa: BLE001  # a failed alert must not kill the daily loop
                 verbose_proxy_logger.exception("Error in model deprecation alert loop: %s", e)
             await asyncio.sleep(DEFAULT_DEPRECATION_CHECK_INTERVAL_SECONDS)
