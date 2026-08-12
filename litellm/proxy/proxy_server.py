@@ -344,6 +344,7 @@ from litellm.proxy.common_utils.periodic_reload_schedule import (
 )
 from litellm.proxy.common_utils.proxy_state import ProxyState
 from litellm.proxy.common_utils.reset_budget_job import ResetBudgetJob
+from litellm.proxy.common_utils.scheduled_job_metrics import ScheduledJobMetricsListener
 from litellm.proxy.common_utils.swagger_utils import ERROR_RESPONSES
 from litellm.proxy.common_utils.timezone_utils import (
     get_budget_reset_settings,
@@ -8940,6 +8941,9 @@ class ProxyStartupEvent:
         # MEMORY LEAK FIX: Start scheduler with paused=False to avoid backlog processing
         # Do NOT reset job times to "now" as this can trigger the memory leak
         # The misfire_grace_time and coalesce settings will handle any missed runs properly
+
+        # Registered before start so the first run of every job is observed.
+        ScheduledJobMetricsListener().register(scheduler)
 
         # Start the scheduler immediately without processing backlogs
         scheduler.start(paused=False)
