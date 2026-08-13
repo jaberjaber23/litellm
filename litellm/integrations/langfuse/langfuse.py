@@ -4,6 +4,7 @@ import os
 import traceback
 from collections.abc import Callable
 from datetime import datetime
+from importlib.metadata import version
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from packaging.version import Version
@@ -37,7 +38,7 @@ from litellm.types.utils import (
 )
 
 if TYPE_CHECKING:
-    from langfuse.client import Langfuse, StatefulTraceClient
+    from langfuse import Langfuse
 
     from litellm.litellm_core_utils.litellm_logging import DynamicLoggingCache
 else:
@@ -75,6 +76,37 @@ def _extract_cache_read_input_tokens(usage_obj) -> int:
     return cache_read_input_tokens
 
 
+MINIMUM_LANGFUSE_VERSION: Final = "4.7"
+UNSUPPORTED_LANGFUSE_VERSION: Final = "5"
+
+
+def installed_langfuse_version() -> str:
+    """Only ``importlib.metadata`` reads correctly on every major.
+
+    ``langfuse.version`` was removed in v4, ``langfuse.__version__`` does not
+    exist in v3, and in v2 it reports a different value from the distribution
+    that is actually installed.
+    """
+    return version("langfuse")
+
+
+def _raise_if_unsupported_langfuse_version(installed_version: str) -> None:
+    """Fail at logger construction rather than dropping every event at request time.
+
+    v4 moved the callback onto OpenTelemetry, so on an older SDK the import of
+    `propagate_attributes` raises inside the per-request handler and the broad
+    except there turns it into silent total data loss.
+    """
+    if Version(MINIMUM_LANGFUSE_VERSION) <= Version(installed_version) < Version(UNSUPPORTED_LANGFUSE_VERSION):
+        return
+    raise ImportError(
+        f"\033[91mlitellm requires langfuse>={MINIMUM_LANGFUSE_VERSION},<{UNSUPPORTED_LANGFUSE_VERSION} for the "
+        f"'langfuse' callback, but {installed_version} is installed. Run "
+        f"'pip install \"langfuse>={MINIMUM_LANGFUSE_VERSION},<{UNSUPPORTED_LANGFUSE_VERSION}\"' to upgrade, or use "
+        f"the 'langfuse_otel' callback, which does not depend on the langfuse SDK\033[0m"
+    )
+
+
 def resolve_langfuse_credentials(
     langfuse_public_key=None,
     langfuse_secret=None,
@@ -105,12 +137,14 @@ class LangFuseLogger:
         allow_env_credentials: bool = True,
     ):
         try:
-            import langfuse
             from langfuse import Langfuse
         except Exception as e:
             raise Exception(
                 f"\033[91mLangfuse not installed, try running 'pip install langfuse' to fix this error: {e}\n{traceback.format_exc()}\033[0m"
             )
+        self.langfuse_sdk_version: str = installed_langfuse_version()
+        _raise_if_unsupported_langfuse_version(self.langfuse_sdk_version)
+
         self.public_key, self.secret_key, self.langfuse_host = resolve_langfuse_credentials(
             langfuse_public_key=langfuse_public_key,
             langfuse_secret=langfuse_secret,
@@ -141,10 +175,6 @@ class LangFuseLogger:
             "flush_interval": self.langfuse_flush_interval,  # flush interval in seconds
             "httpx_client": self.langfuse_client,
         }
-        self.langfuse_sdk_version: str = langfuse.version.__version__
-
-        if Version(self.langfuse_sdk_version) >= Version("2.6.0"):
-            parameters["sdk_integration"] = "litellm"
         self.Langfuse: Langfuse = self.safe_init_langfuse_client(parameters)
 
         # set the current langfuse project id in the environ
@@ -154,7 +184,7 @@ class LangFuseLogger:
             verbose_logger.debug("Langfuse Mock: Using mock project ID")
         else:
             try:
-                project_id = self.Langfuse.client.projects.get().data[0].id
+                project_id = self.Langfuse.api.projects.get().data[0].id
                 os.environ["LANGFUSE_PROJECT_ID"] = project_id
             except Exception:
                 project_id = None
@@ -294,33 +324,20 @@ class LangFuseLogger:
             verbose_logger.debug("OUTPUT IN LANGFUSE: %s; original: %s", output, response_obj)
             trace_id = None
             generation_id = None
-            if self._is_langfuse_v2():
-                trace_id, generation_id = self._log_langfuse_v2(
-                    user_id=user_id,
-                    metadata=metadata,
-                    litellm_params=litellm_params,
-                    output=output,
-                    start_time=start_time,
-                    end_time=end_time,
-                    kwargs=kwargs,
-                    optional_params=optional_params,
-                    input=input,
-                    response_obj=response_obj,
-                    level=level,
-                    litellm_call_id=litellm_call_id,
-                )
-            elif response_obj is not None:
-                self._log_langfuse_v1(
-                    user_id=user_id,
-                    metadata=metadata,
-                    output=output,
-                    start_time=start_time,
-                    end_time=end_time,
-                    kwargs=kwargs,
-                    optional_params=optional_params,
-                    input=input,
-                    response_obj=response_obj,
-                )
+            trace_id, generation_id = self._log_langfuse_v2(
+                user_id=user_id,
+                metadata=metadata,
+                litellm_params=litellm_params,
+                output=output,
+                start_time=start_time,
+                end_time=end_time,
+                kwargs=kwargs,
+                optional_params=optional_params,
+                input=input,
+                response_obj=response_obj,
+                level=level,
+                litellm_call_id=litellm_call_id,
+            )
             verbose_logger.debug("Langfuse Layer Logging - final response object: %s", response_obj)
             verbose_logger.info("Langfuse Layer Logging - logging success")
 
@@ -415,58 +432,6 @@ class LangFuseLogger:
 
         This approach does not impact latency and runs in the background
         """
-
-    def _is_langfuse_v2(self):
-        import langfuse
-
-        return Version(langfuse.version.__version__) >= Version("2.0.0")
-
-    def _log_langfuse_v1(
-        self,
-        user_id,
-        metadata,
-        output,
-        start_time,
-        end_time,
-        kwargs,
-        optional_params,
-        input,
-        response_obj,
-    ):
-        from langfuse.model import CreateGeneration, CreateTrace
-
-        verbose_logger.warning(
-            "Please upgrade langfuse to v2.0.0 or higher: https://github.com/langfuse/langfuse-python/releases/tag/v2.0.1"
-        )
-
-        trace: Final = self.Langfuse.trace(
-            CreateTrace(
-                name=metadata.get("generation_name", "litellm-completion"),
-                input=input,
-                output=output,
-                userId=user_id,
-            )
-        )
-
-        custom_llm_provider: Final = cast(str | None, kwargs.get("custom_llm_provider"))
-        model_name: Final = reconstruct_model_name(kwargs.get("model", ""), custom_llm_provider, metadata)
-
-        trace.generation(
-            CreateGeneration(
-                name=metadata.get("generation_name", "litellm-completion"),
-                startTime=start_time,
-                endTime=end_time,
-                model=model_name,
-                modelParameters=optional_params,
-                prompt=input,
-                completion=output,
-                usage={
-                    "prompt_tokens": response_obj.usage.prompt_tokens,
-                    "completion_tokens": response_obj.usage.completion_tokens,
-                },
-                metadata=metadata,
-            )
-        )
 
     def _log_langfuse_v2(
         self,

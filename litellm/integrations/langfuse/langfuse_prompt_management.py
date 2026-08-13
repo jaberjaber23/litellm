@@ -6,8 +6,6 @@ import os
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Final, Literal, TypeAlias, cast
 
-from packaging.version import Version
-
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.prompt_management_base import PromptManagementClient
 from litellm.litellm_core_utils.asyncify import run_async_function
@@ -19,12 +17,17 @@ from ...litellm_core_utils.specialty_caches.dynamic_logging_cache import (
     DynamicLoggingCache,
 )
 from ..prompt_management_base import PromptManagementBase
-from .langfuse import LangFuseLogger, resolve_langfuse_credentials
+from .langfuse import (
+    LangFuseLogger,
+    _raise_if_unsupported_langfuse_version,
+    installed_langfuse_version,
+    resolve_langfuse_credentials,
+)
 from .langfuse_handler import LangFuseHandler
 
 if TYPE_CHECKING:
     from langfuse import Langfuse
-    from langfuse.client import ChatPromptClient, TextPromptClient
+    from langfuse.model import ChatPromptClient, TextPromptClient
 
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
 
@@ -63,7 +66,6 @@ def langfuse_client_init(
         Exception: If langfuse package is not installed
     """
     try:
-        import langfuse
         from langfuse import Langfuse
     except Exception as e:
         raise Exception(
@@ -94,20 +96,18 @@ def langfuse_client_init(
         "flush_interval": LangFuseLogger._get_langfuse_flush_interval(flush_interval),  # flush interval in seconds
     }
 
-    if Version(langfuse.version.__version__) >= Version("2.6.0"):
-        parameters["sdk_integration"] = "litellm"
+    _raise_if_unsupported_langfuse_version(installed_langfuse_version())
 
-    if Version(langfuse.version.__version__) >= Version("2.7.3"):
-        import httpx
+    import httpx
 
-        import litellm
+    import litellm
 
-        from ...llms.custom_httpx.http_handler import get_ssl_configuration
+    from ...llms.custom_httpx.http_handler import get_ssl_configuration
 
-        parameters["httpx_client"] = httpx.Client(
-            verify=get_ssl_configuration(),
-            cert=os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate),
-        )
+    parameters["httpx_client"] = httpx.Client(
+        verify=get_ssl_configuration(),
+        cert=os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate),
+    )
 
     client: Final = Langfuse(**parameters)
 
@@ -122,9 +122,8 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
         langfuse_host=None,
         flush_interval=1,
     ):
-        import langfuse
 
-        self.langfuse_sdk_version = langfuse.version.__version__
+        self.langfuse_sdk_version = installed_langfuse_version()
         self.Langfuse = langfuse_client_init(
             langfuse_public_key=langfuse_public_key,
             langfuse_secret=langfuse_secret,
