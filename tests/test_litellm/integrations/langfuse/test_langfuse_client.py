@@ -17,7 +17,7 @@ from litellm.integrations.langfuse.langfuse import (
     _raise_if_unsupported_langfuse_version,
     installed_langfuse_version,
 )
-from litellm.integrations.langfuse.langfuse_v4_client import (
+from litellm.integrations.langfuse.langfuse_client import (
     build_isolated_tracer_provider,
     evict_stale_langfuse_resources,
     shutdown_langfuse_client,
@@ -106,7 +106,7 @@ def test_eviction_flushes_queued_observations_before_tearing_down():
         InMemorySpanExporter,
     )
 
-    from litellm.integrations.langfuse.langfuse_v4_observations import (
+    from litellm.integrations.langfuse.langfuse_observations import (
         open_trace_context,
         start_generation,
     )

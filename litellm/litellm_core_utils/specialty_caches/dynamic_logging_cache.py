@@ -42,7 +42,7 @@ class LangfuseInMemoryCache(InMemoryCache):
             #########################################################
             # Clean up Langfuse initialized clients
             #########################################################
-            from litellm.integrations.langfuse.langfuse_v4_client import (
+            from litellm.integrations.langfuse.langfuse_client import (
                 shutdown_langfuse_client,
             )
 

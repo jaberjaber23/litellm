@@ -15,7 +15,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from litellm.integrations.langfuse.langfuse_v4_observations import (
+from litellm.integrations.langfuse.langfuse_observations import (
     AS_ROOT_ATTRIBUTE,
     RELEASE_ATTRIBUTE,
     open_trace_context,

@@ -12,7 +12,7 @@ import pytest
 import litellm
 from litellm.integrations.langfuse import langfuse as langfuse_module
 from litellm.integrations.langfuse.langfuse import LangFuseLogger
-from litellm.integrations.langfuse.langfuse_v4_observations import resolve_trace_id
+from litellm.integrations.langfuse.langfuse_observations import resolve_trace_id
 
 sys.path.insert(0, os.path.abspath("../.."))
 from litellm.integrations.langfuse.langfuse import LangFuseLogger
