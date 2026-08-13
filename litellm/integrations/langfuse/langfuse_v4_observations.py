@@ -1,19 +1,16 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from hashlib import sha256
-from typing import TYPE_CHECKING, Any, Final
+from typing import Final
 
 import opentelemetry.trace as otel_trace
 from langfuse import Langfuse, LangfuseGeneration, LangfuseSpan, propagate_attributes
+from opentelemetry.context import Context
 
-if TYPE_CHECKING:
-    Span = Any
-else:
-    Span = Any
-
-__all__ = [
+__all__ = (
     "AS_ROOT_ATTRIBUTE",
     "RELEASE_ATTRIBUTE",
     "open_trace_context",
@@ -23,7 +20,7 @@ __all__ = [
     "start_child_span",
     "start_generation",
     "to_unix_nanos",
-]
+)
 
 AS_ROOT_ATTRIBUTE: Final = "langfuse.internal.as_root"
 RELEASE_ATTRIBUTE: Final = "langfuse.release"
@@ -66,7 +63,7 @@ def open_trace_context(
     client: Langfuse,
     trace_id: str,
     parent_observation_id: str | None,
-) -> tuple[Any, bool]:
+) -> tuple[Context, bool]:
     """Build the OTel context that places new observations inside ``trace_id``.
 
     Returns the context plus whether the caller must claim trace root. Langfuse
@@ -84,12 +81,12 @@ def open_trace_context(
 def start_generation(
     *,
     client: Langfuse,
-    context: Any,
+    context: Context,
     name: str,
     start_time: datetime | None,
     claim_trace_root: bool,
     release: str | None = None,
-    attributes: dict[str, Any],
+    attributes: Mapping[str, object],
 ) -> LangfuseGeneration:
     """Create a generation whose start time is when the model call began.
 
@@ -110,10 +107,10 @@ def start_generation(
 def start_child_span(
     *,
     client: Langfuse,
-    context: Any,
+    context: Context,
     name: str,
     start_time: datetime | None,
-    attributes: dict[str, Any],
+    attributes: Mapping[str, object],
 ) -> LangfuseSpan:
     """Create a sibling observation inside the same trace, keeping its own window."""
     otel_span: Final = client._otel_tracer.start_span(  # only route to a historical start time

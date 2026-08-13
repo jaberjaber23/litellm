@@ -62,17 +62,19 @@ def test_isolated_provider_carries_environment_and_release():
 
 
 def test_client_does_not_take_over_the_process_tracer_provider():
-    host_provider = TracerProvider()
-    otel_trace.set_tracer_provider(host_provider)
+    # the global provider can only be set once per process, so assert it is left
+    # alone rather than assuming this test is the one that installed it
+    provider_before = otel_trace.get_tracer_provider()
 
     client = _client()
 
-    assert otel_trace.get_tracer_provider() is host_provider
-    assert client._resources.tracer_provider is not host_provider
-    assert not any(
-        "Langfuse" in type(processor).__name__
-        for processor in host_provider._active_span_processor._span_processors
-    )
+    assert otel_trace.get_tracer_provider() is provider_before
+    assert client._resources.tracer_provider is not provider_before
+    active = getattr(provider_before, "_active_span_processor", None)
+    if active is not None:
+        assert not any(
+            "Langfuse" in type(processor).__name__ for processor in active._span_processors
+        )
 
 
 def test_rotated_credentials_replace_the_cached_client():

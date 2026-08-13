@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import Final
 
 import opentelemetry.trace as otel_trace
@@ -8,11 +9,11 @@ from langfuse._client.resource_manager import LangfuseResourceManager
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 
-__all__ = [
+__all__ = (
     "build_isolated_tracer_provider",
     "evict_stale_langfuse_resources",
     "shutdown_langfuse_client",
-]
+)
 
 _ENVIRONMENT_ATTRIBUTE: Final = "langfuse.environment"
 _RELEASE_ATTRIBUTE: Final = "langfuse.release"
@@ -29,12 +30,14 @@ def build_isolated_tracer_provider(*, environment: str | None, release: str | No
     The resource is rebuilt here because langfuse only applies ``environment``
     and ``release`` when it constructs the provider itself.
     """
-    attributes: Final = {
-        key: value
-        for key, value in ((_ENVIRONMENT_ATTRIBUTE, environment), (_RELEASE_ATTRIBUTE, release))
-        if value is not None
-    }
-    return TracerProvider(resource=Resource.create(attributes))
+    attributes: Final = MappingProxyType(
+        {
+            key: value
+            for key, value in ((_ENVIRONMENT_ATTRIBUTE, environment), (_RELEASE_ATTRIBUTE, release))
+            if value is not None
+        }
+    )
+    return TracerProvider(resource=Resource.create(dict(attributes)))
 
 
 def evict_stale_langfuse_resources(*, public_key: str | None, secret_key: str | None, base_url: str | None) -> None:
