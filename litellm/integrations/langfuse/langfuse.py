@@ -256,7 +256,7 @@ class LangFuseLogger:
             raise Exception(
                 f"Max langfuse clients reached: {litellm.initialized_langfuse_clients} is greater than {MAX_LANGFUSE_INITIALIZED_CLIENTS}"
             )
-        from litellm.integrations.langfuse.langfuse_client import (
+        from litellm.integrations.langfuse.langfuse_sdk import (
             build_isolated_tracer_provider,
             evict_stale_langfuse_resources,
         )
@@ -772,7 +772,7 @@ class LangFuseLogger:
 
             # langfuse ships in the proxy-runtime extra, so this module must stay importable
             # without it; every symbol below comes from the v4 SDK
-            from litellm.integrations.langfuse.langfuse_observations import (
+            from litellm.integrations.langfuse.langfuse_sdk import (
                 open_trace_context,
                 propagate_attributes,
                 resolve_observation_id,
@@ -972,7 +972,7 @@ class LangFuseLogger:
             )
             return
 
-        from litellm.integrations.langfuse.langfuse_observations import start_child_span, to_unix_nanos
+        from litellm.integrations.langfuse.langfuse_sdk import start_child_span, to_unix_nanos
 
         for guardrail_entry in guardrail_information:
             if not isinstance(guardrail_entry, dict):
@@ -1116,7 +1116,7 @@ def log_provider_specific_information_as_span(
 
 
 def _end_grounding_span(*, client: "Langfuse", context: "Context", name: str, value: object) -> None:
-    from litellm.integrations.langfuse.langfuse_observations import start_child_span
+    from litellm.integrations.langfuse.langfuse_sdk import start_child_span
 
     start_child_span(
         client=client,
