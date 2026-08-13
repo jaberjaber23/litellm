@@ -99,6 +99,40 @@ def test_unchanged_credentials_keep_the_cached_client():
     assert LangfuseResourceManager._instances.get(PUBLIC_KEY) is original._resources
 
 
+def test_eviction_flushes_queued_observations_before_tearing_down():
+    """An observation already ended when the cache evicts must still reach langfuse."""
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+        InMemorySpanExporter,
+    )
+
+    from litellm.integrations.langfuse.langfuse_v4_observations import (
+        open_trace_context,
+        start_generation,
+    )
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    # a long delay keeps the span queued, so only the shutdown can flush it
+    provider.add_span_processor(BatchSpanProcessor(exporter, schedule_delay_millis=600000))
+    client = Langfuse(
+        public_key=PUBLIC_KEY,
+        secret_key="sk-original",
+        host="http://127.0.0.1:1",
+        tracer_provider=provider,
+        span_exporter=exporter,
+    )
+    context, claim_root = open_trace_context(client=client, trace_id="a" * 32, parent_observation_id=None)
+    start_generation(
+        client=client, context=context, name="in-flight", start_time=None, claim_trace_root=claim_root, attributes={}
+    ).end()
+    assert exporter.get_finished_spans() == ()
+
+    shutdown_langfuse_client(client)
+
+    assert any(span.name == "in-flight" for span in exporter.get_finished_spans())
+
+
 def test_shutdown_deregisters_so_a_later_client_is_not_a_corpse():
     client = _client()
     resources = client._resources
