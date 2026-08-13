@@ -1221,7 +1221,11 @@ const MCPServerEdit: React.FC<MCPServerEditProps> = ({
                   {
                     validator: (_, value) =>
                       value && typeof value === "string" && value.trim() === ""
-                        ? Promise.reject(new Error("Authentication value cannot be empty"))
+                        ? Promise.reject(
+                            new Error(
+                              "Authentication value cannot be empty. To remove a stored token, use Disconnect / Clear token on the server's Overview tab.",
+                            ),
+                          )
                         : Promise.resolve(),
                   },
                 ]}

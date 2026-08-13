@@ -22,7 +22,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 from fastapi import (
     APIRouter,
@@ -118,6 +118,7 @@ if MCP_AVAILABLE:
 
     from litellm.proxy._experimental.mcp_server.db import (
         approve_mcp_server,
+        clear_mcp_server_oauth_token,
         create_draft_mcp_server,
         create_mcp_server,
         delete_mcp_server,
@@ -153,6 +154,9 @@ if MCP_AVAILABLE:
     from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
         global_mcp_server_manager,
     )
+    from litellm.proxy._experimental.mcp_server.oauth2_token_cache import (
+        mcp_oauth2_token_cache,
+    )
     from litellm.proxy._experimental.mcp_server.ui_session_utils import (
         admitted_user_context,
         build_effective_auth_contexts,
@@ -165,6 +169,7 @@ if MCP_AVAILABLE:
         MCPApprovalStatus,
         MCPOAuthUserCredentialRequest,
         MCPOAuthUserCredentialStatus,
+        MCPServerOAuthTokenStatus,
         MCPSubmissionsSummary,
         MCPTransport,
         MCPUserCredentialListItem,
@@ -2006,6 +2011,84 @@ if MCP_AVAILABLE:
         # Update from global mcp store
 
         return Response(status_code=status.HTTP_202_ACCEPTED)
+
+    @router.delete(
+        "/server/{server_id}/oauth-token",
+        description=(
+            "Clear every OAuth token stored for an MCP server (admin only), so it can be reauthorized "
+            "with a different set of upstream grants. Leaves the declared OAuth app config (url, "
+            "auth_type, issuer, client_id/secret) intact so nothing has to be reconfigured or recreated."
+        ),
+        response_model=MCPServerOAuthTokenStatus,
+    )
+    @management_endpoint_wrapper
+    async def clear_mcp_server_oauth_token_endpoint(
+        server_id: str,
+        user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
+    ):
+        """
+        Clear every stored OAuth token for a server so the next call reauthorizes from scratch.
+
+        A token minted by 'Authorize & Fetch Token' can be served from three places, and a clear that
+        misses any one of them leaves the old upstream grants live:
+          - the per-user credential rows the interactive (authorization_code) flow writes, plus the two
+            caches that hydrate from them,
+          - the in-memory client_credentials mint cache an M2M server serves from,
+          - the minted fields on the server row's own credential blob.
+        This clears all three. A user's own BYOK API key is never touched.
+
+        Two limits worth stating rather than implying. A client_credentials server mints from the
+        client_id/client_secret it was configured with, so clearing forces a fresh mint rather than
+        revoking access; taking that access away means removing the client, which is a reconfiguration,
+        not a disconnect. And the mint cache is per worker, so on a multi-worker deployment the other
+        workers keep their own minted token until it expires.
+
+        ```
+        curl -X "DELETE" --location 'http://localhost:4000/v1/mcp/server/server_id/oauth-token' \
+        --header 'Authorization: Bearer your_api_key_here'
+        ```
+        """
+        prisma_client: Final = get_prisma_client_or_throw("Database not connected. Connect a database to your proxy")
+
+        if LitellmUserRoles.PROXY_ADMIN != user_api_key_dict.user_role:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail={
+                    "error": (
+                        "Call not allowed to clear the MCP server OAuth token. User is not a proxy admin. "
+                        "route=DELETE /v1/mcp/server/{server_id}/oauth-token"
+                    )
+                },
+            )
+
+        cleared: Final = await clear_mcp_server_oauth_token(
+            prisma_client,
+            server_id,
+            touched_by=user_api_key_dict.user_id or LITELLM_PROXY_ADMIN_NAME,
+        )
+        if cleared is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={"error": f"MCP Server not found, passed server_id={server_id}"},
+            )
+
+        # The in-memory stores are reconciled even when the purge raises. The server row has already
+        # been written by then, so skipping them on the error path would leave the registry and the
+        # mint cache serving material the DB no longer backs, and the admin's retry would read as a
+        # no-op while the old grants stayed live. Both are idempotent, so running them twice is free.
+        try:
+            cleared_user_tokens: Final = await purge_user_oauth_credentials_for_server(prisma_client, server_id)
+        finally:
+            mcp_oauth2_token_cache.invalidate(server_id)
+            if cleared.had_token:
+                await global_mcp_server_manager.update_server(cleared.server)
+
+        return MCPServerOAuthTokenStatus(
+            server_id=server_id,
+            has_token=False,
+            cleared=cleared.had_token or cleared_user_tokens > 0,
+            cleared_user_tokens=cleared_user_tokens,
+        )
 
     @router.post(
         "/server/{server_id}/user-credential",

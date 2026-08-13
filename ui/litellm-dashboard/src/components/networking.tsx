@@ -7788,6 +7788,13 @@ export interface MCPOAuthUserCredentialStatus {
   connected_at?: string | null;
 }
 
+export interface MCPServerOAuthTokenStatus {
+  server_id: string;
+  has_token: boolean;
+  cleared: boolean;
+  cleared_user_tokens: number;
+}
+
 export interface MCPUserCredentialListItem {
   server_id: string;
   server_name?: string | null;
@@ -7863,6 +7870,13 @@ export const deleteMCPOAuthUserCredential = async (
     throw new Error(detailMsg || "Failed to revoke OAuth credential");
   }
   return response.json();
+};
+
+export const deleteMCPServerOAuthToken = async (
+  accessToken: string,
+  serverId: string,
+): Promise<MCPServerOAuthTokenStatus> => {
+  return apiClient.delete<MCPServerOAuthTokenStatus>(`/v1/mcp/server/${serverId}/oauth-token`, { accessToken });
 };
 
 export const getMCPOAuthUserCredentialStatus = async (

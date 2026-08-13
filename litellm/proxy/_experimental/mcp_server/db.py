@@ -3,12 +3,14 @@ import binascii
 import hashlib
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
 
 from litellm._logging import verbose_proxy_logger
 from litellm._uuid import uuid
 from litellm.constants import MCP_PER_USER_TOKEN_EXPIRY_BUFFER_SECONDS
+from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
 from litellm.proxy._experimental.mcp_server.oauth_utils import build_upstream_oauth2_token_request
 from litellm.proxy._types import (
@@ -297,7 +299,6 @@ def _prepare_mcp_server_data(
     Returns:
         Dict with properly serialized JSON fields
     """
-    from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 
     # Convert model to dict.
     # - Partial update (exclude_unset): only caller-provided keys are emitted, so
@@ -920,7 +921,6 @@ async def update_mcp_server(
     """
     Update a new mcp server record in the db
     """
-    from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 
     # Use helper to prepare data with proper JSON serialization.
     # exclude_unset=True makes this a true partial update: fields the caller did
@@ -1036,6 +1036,45 @@ async def update_mcp_server(
     return updated_mcp_server
 
 
+@dataclass(frozen=True, slots=True)
+class ClearedMCPServerOAuthToken:
+    """Outcome of clearing a server's minted OAuth token: the row as persisted, plus whether
+    any minted material was actually present to remove (so the caller can report a no-op)."""
+
+    server: LiteLLM_MCPServerTable
+    had_token: bool
+
+
+async def clear_mcp_server_oauth_token(
+    prisma_client: PrismaClient, server_id: str, touched_by: str
+) -> ClearedMCPServerOAuthToken | None:
+    """Drop only the gateway-minted token material (``access_token``/``refresh_token``/``expires_in``)
+    from a server's credential blob, leaving the declared app config (url, auth_type, issuer,
+    client_id/client_secret, token-exchange columns) untouched so the admin can reauthorize without
+    reconfiguring. Returns ``None`` when the server row does not exist.
+    """
+
+    existing: Final = await _db_find_mcp_server_row(prisma_client, server_id)
+    if existing is None:
+        return None
+
+    existing_creds: Final = _credentials_blob_to_mutable_dict(existing.credentials) if existing.credentials else {}
+    if not _MINTED_TOKEN_CREDENTIAL_FIELDS & existing_creds.keys():
+        _decrypt_env_vars_on_returned_row(existing)
+        return ClearedMCPServerOAuthToken(server=existing, had_token=False)
+
+    remaining: Final = {
+        key: value for key, value in existing_creds.items() if key not in _MINTED_TOKEN_CREDENTIAL_FIELDS
+    }
+    updated: Final = await _db_update_mcp_server_row(
+        prisma_client,
+        server_id,
+        {"credentials": safe_dumps(remaining), "updated_by": touched_by},
+    )
+    _decrypt_env_vars_on_returned_row(updated)
+    return ClearedMCPServerOAuthToken(server=updated, had_token=True)
+
+
 async def get_mcp_server_oauth_client_credentials(prisma_client: PrismaClient, server_id: str) -> object | None:
     """Read the persisted (encrypted) DCR OAuth client blob for a server from the
     server-scoped store, or None. Config.yaml-declared servers have no
@@ -1058,7 +1097,6 @@ async def upsert_mcp_server_oauth_client_credentials(
     client_id/client_secret are encrypted at rest with the same salt key used for the
     server row's credentials blob, so ``_apply_persisted_dcr_credentials`` decrypts them the
     same way regardless of which store a server's client came from."""
-    from litellm.litellm_core_utils.safe_json_dumps import safe_dumps
 
     encrypted: Final = encrypt_credentials(credentials=MCPCredentials(**credentials), encryption_key=_get_salt_key())
     blob: Final = safe_dumps(encrypted)
@@ -1080,7 +1118,6 @@ def _reencrypt_mcp_credentials_blob(
     uniformly and cannot silently skip one."""
     if not credentials:
         return None
-    from litellm.litellm_core_utils.safe_json_dumps import safe_dumps  # noqa: PLC0415  # avoids circular import
 
     creds_dict: Final = _credentials_blob_to_mutable_dict(credentials)
     decrypted: Final = decrypt_credentials(credentials=cast(MCPCredentials, creds_dict))
@@ -1089,7 +1126,6 @@ def _reencrypt_mcp_credentials_blob(
 
 
 async def rotate_mcp_server_credentials_master_key(prisma_client: PrismaClient, touched_by: str, new_master_key: str):
-    from litellm.litellm_core_utils.safe_json_dumps import safe_dumps  # noqa: PLC0415  # avoids circular import
 
     mcp_servers: Final = await _db_find_mcp_server_rows(prisma_client)
 
@@ -1491,9 +1527,6 @@ async def purge_user_oauth_credentials_for_server(
     oauth_rows: Final = [row for row in rows if _decode_oauth_payload(row.credential_b64) is not None]
     if not oauth_rows:
         return 0
-    deleted_count: Final = await _user_credential_actions(prisma_client).delete_many(
-        where={"server_id": server_id, "user_id": {"in": [row.user_id for row in oauth_rows]}}
-    )
     if invalidate_token_cache is None:
         from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
             global_mcp_server_manager,
@@ -1501,8 +1534,17 @@ async def purge_user_oauth_credentials_for_server(
 
         invalidate_token_cache = global_mcp_server_manager.invalidate_user_oauth_token_cache
 
-    for row in oauth_rows:
-        await invalidate_token_cache(row.user_id, server_id)
+    # Resolved above and dropped in a finally so a delete that succeeds is never followed by a skipped
+    # invalidation: the rows would be gone while their cached tokens stayed servable to the end of
+    # their TTL, and a retry would find nothing left to enumerate and so could never drop them. An
+    # invalidation for a row that survived the delete only costs that user's next resolve a DB read.
+    try:
+        deleted_count: Final = await _user_credential_actions(prisma_client).delete_many(
+            where={"server_id": server_id, "user_id": {"in": [row.user_id for row in oauth_rows]}}
+        )
+    finally:
+        for row in oauth_rows:
+            await invalidate_token_cache(row.user_id, server_id)
     if deleted_count != len(oauth_rows):
         verbose_proxy_logger.warning(
             "MCP server %s: purge removed %d OAuth credential row(s) but %d were enumerated; "
