@@ -1,5 +1,6 @@
 import datetime
 import os
+import json
 import sys
 import types
 import unittest
@@ -11,6 +12,7 @@ import pytest
 import litellm
 from litellm.integrations.langfuse import langfuse as langfuse_module
 from litellm.integrations.langfuse.langfuse import LangFuseLogger
+from litellm.integrations.langfuse.langfuse_v4_observations import resolve_trace_id
 
 sys.path.insert(0, os.path.abspath("../.."))
 from litellm.integrations.langfuse.langfuse import LangFuseLogger
@@ -58,28 +60,27 @@ class TestLangfuseUsageDetails(unittest.TestCase):
 
         self.mock_langfuse_client.trace.side_effect = _trace_side_effect
 
-        # Mock the langfuse module that's imported locally in methods
-        self.langfuse_module_patcher = patch.dict(
-            "sys.modules", {"langfuse": MagicMock()}
-        )
-        self.mock_langfuse_module = self.langfuse_module_patcher.start()
-
-        # Create a mock for the langfuse module with version
-        self.mock_langfuse = MagicMock()
-        self.mock_langfuse.version = MagicMock()
-        self.mock_langfuse.version.__version__ = (
-            "3.0.0"  # Set a version that supports all features
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
         )
 
-        # Mock the Langfuse class
-        self.mock_langfuse_class = MagicMock()
-        self.mock_langfuse_class.return_value = self.mock_langfuse_client
+        self.span_exporter = InMemorySpanExporter()
+        self.real_provider = TracerProvider()
+        self.real_provider.add_span_processor(SimpleSpanProcessor(self.span_exporter))
 
-        # Set up the sys.modules['langfuse'] mock
-        sys.modules["langfuse"] = self.mock_langfuse
-        sys.modules["langfuse"].Langfuse = self.mock_langfuse_class
+        # the real SDK is installed; inject the client instead of replacing the module,
+        # so the v4 imports under test resolve normally
+        import langfuse as _langfuse_module
 
-        # Create a fresh logger instance for each test
+        self.real_langfuse_class = _langfuse_module.Langfuse
+        self.langfuse_class_patcher = patch(
+            "langfuse.Langfuse", return_value=self.mock_langfuse_client
+        )
+        self.langfuse_class_patcher.start()
+        self.addCleanup(self.langfuse_class_patcher.stop)
+
         self.logger = LangFuseLogger()
 
         # Explicitly set the Langfuse client to our mock
@@ -137,7 +138,38 @@ class TestLangfuseUsageDetails(unittest.TestCase):
         litellm.initialized_langfuse_clients = self._original_langfuse_clients_count
 
         self.env_patcher.stop()
-        self.langfuse_module_patcher.stop()  # patch.dict automatically restores sys.modules
+
+    def use_real_langfuse_client(self):
+        """Point the logger at a real v4 client whose spans land in memory."""
+        from langfuse._client.resource_manager import LangfuseResourceManager
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
+            InMemorySpanExporter,
+        )
+
+        self.span_exporter = InMemorySpanExporter()
+        self.real_provider = TracerProvider()
+        self.real_provider.add_span_processor(SimpleSpanProcessor(self.span_exporter))
+        LangfuseResourceManager._instances.pop("pk-unit-test", None)
+        self.logger.Langfuse = self.real_langfuse_class(
+            public_key="pk-unit-test",
+            secret_key="sk-unit-test",
+            host="http://127.0.0.1:1",
+            tracer_provider=self.real_provider,
+            span_exporter=self.span_exporter,
+        )
+        return self.logger.Langfuse
+
+    def exported_generation(self):
+        self.logger.Langfuse.flush()
+        spans = [s for s in self.span_exporter.get_finished_spans()]
+        assert spans, "no spans were exported"
+        return spans[-1]
+
+    @staticmethod
+    def span_trace_id(span):
+        return format(span.context.trace_id, "032x")
 
     def test_langfuse_usage_details_type(self):
         """Test that LangfuseUsageDetails TypedDict is properly defined with the correct fields"""
@@ -280,9 +312,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
         self.mock_langfuse_trace.span.return_value = mock_span
         self.mock_langfuse_trace.generation.return_value = self.mock_langfuse_generation
 
-        # Ensure trace returns our mock
-        self.mock_langfuse_client.trace.return_value = self.mock_langfuse_trace
-        self.logger.Langfuse = self.mock_langfuse_client
+        self.use_real_langfuse_client()
 
         with (
             patch(
@@ -340,29 +370,16 @@ class TestLangfuseUsageDetails(unittest.TestCase):
             except Exception as e:
                 self.fail(f"_log_langfuse_v2 raised an exception: {e}")
 
-            # Verify that trace was called first
-            self.mock_langfuse_client.trace.assert_called()
 
-            #  Check the arguments passed to the mocked langfuse generation call
-            self.mock_langfuse_trace.generation.assert_called_once()
-            call_args, call_kwargs = self.mock_langfuse_trace.generation.call_args
 
-            #  Inspect the usage and usage_details dictionaries
-            usage_arg = call_kwargs.get("usage")
-            usage_details_arg = call_kwargs.get("usage_details")
-
-            self.assertIsNotNone(usage_arg)
-            self.assertIsNotNone(usage_details_arg)
-
-            # Verify that None values were converted to 0
-            self.assertEqual(usage_arg["prompt_tokens"], 0)
-            self.assertEqual(usage_arg["completion_tokens"], 0)
-
-            self.assertEqual(usage_details_arg["input"], 0)
-            self.assertEqual(usage_details_arg["output"], 0)
-            self.assertEqual(usage_details_arg["total"], 0)
-            self.assertEqual(usage_details_arg["cache_creation_input_tokens"], 0)
-            self.assertEqual(usage_details_arg["cache_read_input_tokens"], 0)
+            usage_details = json.loads(
+                self.exported_generation().attributes["langfuse.observation.usage_details"]
+            )
+            assert usage_details["input"] == 0
+            assert usage_details["output"] == 0
+            assert usage_details["total"] == 0
+            assert usage_details["cache_creation_input_tokens"] == 0
+            assert usage_details["cache_read_input_tokens"] == 0
 
             mock_add_prompt_params.assert_called_once()
 
@@ -417,7 +434,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
     def test_log_langfuse_v2_uses_standard_trace_id_when_available(self):
         payload = self._build_standard_logging_payload(trace_id="std-trace-id")
         kwargs = self._build_langfuse_kwargs(payload)
-        self.last_trace_kwargs = {}
+        self.use_real_langfuse_client()
 
         with patch(
             "litellm.integrations.langfuse.langfuse._add_prompt_to_generation_params",
@@ -439,12 +456,12 @@ class TestLangfuseUsageDetails(unittest.TestCase):
                 litellm_call_id="call-id-xyz",
             )
 
-        assert self.last_trace_kwargs.get("id") == "std-trace-id"
+        assert self.span_trace_id(self.exported_generation()) == resolve_trace_id("std-trace-id")
 
     def test_log_langfuse_v2_defaults_to_call_id_without_standard_trace_id(self):
         payload = self._build_standard_logging_payload()
         kwargs = self._build_langfuse_kwargs(payload)
-        self.last_trace_kwargs = {}
+        self.use_real_langfuse_client()
 
         with patch(
             "litellm.integrations.langfuse.langfuse._add_prompt_to_generation_params",
@@ -466,7 +483,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
                 litellm_call_id="call-id-xyz",
             )
 
-        assert self.last_trace_kwargs.get("id") == "call-id-xyz"
+        assert self.span_trace_id(self.exported_generation()) == resolve_trace_id("call-id-xyz")
 
     def test_log_langfuse_v2_uses_litellm_trace_id_fallback_over_call_id(self):
         """
@@ -478,7 +495,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
         payload = self._build_standard_logging_payload()  # no trace_id
         kwargs = self._build_langfuse_kwargs(payload)
         kwargs["litellm_trace_id"] = "trace-id-from-kwargs"
-        self.last_trace_kwargs = {}
+        self.use_real_langfuse_client()
 
         with patch(
             "litellm.integrations.langfuse.langfuse._add_prompt_to_generation_params",
@@ -501,7 +518,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
             )
 
         # litellm_trace_id should be preferred over litellm_call_id
-        assert self.last_trace_kwargs.get("id") == "trace-id-from-kwargs"
+        assert self.span_trace_id(self.exported_generation()) == resolve_trace_id("trace-id-from-kwargs")
 
     def test_log_langfuse_v2_uses_litellm_trace_id_when_standard_logging_object_none(
         self,
@@ -519,7 +536,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
             "messages": [],
             "litellm_trace_id": "trace-id-failure",
         }
-        self.last_trace_kwargs = {}
+        self.use_real_langfuse_client()
 
         with patch(
             "litellm.integrations.langfuse.langfuse._add_prompt_to_generation_params",
@@ -542,7 +559,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
             )
 
         # Must use litellm_trace_id, not litellm_call_id
-        assert self.last_trace_kwargs.get("id") == "trace-id-failure"
+        assert self.span_trace_id(self.exported_generation()) == resolve_trace_id("trace-id-failure")
 
     def test_log_langfuse_v2_session_id_passed_as_trace_session_id(self):
         """
@@ -552,7 +569,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
         """
         payload = self._build_standard_logging_payload(trace_id="std-trace-123")
         kwargs = self._build_langfuse_kwargs(payload)
-        self.last_trace_kwargs = {}
+        self.use_real_langfuse_client()
 
         with patch(
             "litellm.integrations.langfuse.langfuse._add_prompt_to_generation_params",
@@ -575,9 +592,9 @@ class TestLangfuseUsageDetails(unittest.TestCase):
             )
 
         # session_id should be set for Langfuse session grouping
-        assert self.last_trace_kwargs.get("session_id") == "my-session-abc"
+        assert self.exported_generation().attributes["session.id"] == "my-session-abc"
         # trace_id should remain the standard trace_id, NOT the session_id
-        assert self.last_trace_kwargs.get("id") == "std-trace-123"
+        assert self.span_trace_id(self.exported_generation()) == resolve_trace_id("std-trace-123")
 
     def test_log_langfuse_v2_session_id_preserved_for_error_level(self):
         """
@@ -587,7 +604,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
         """
         payload = self._build_standard_logging_payload(trace_id="std-trace-err")
         kwargs = self._build_langfuse_kwargs(payload)
-        self.last_trace_kwargs = {}
+        self.use_real_langfuse_client()
 
         with patch(
             "litellm.integrations.langfuse.langfuse._add_prompt_to_generation_params",
@@ -610,11 +627,11 @@ class TestLangfuseUsageDetails(unittest.TestCase):
             )
 
         # session_id must be preserved even for ERROR level logs
-        assert self.last_trace_kwargs.get("session_id") == "error-session-xyz"
+        assert self.exported_generation().attributes["session.id"] == "error-session-xyz"
         # trace_id should be the standard trace_id, not the session_id
-        assert self.last_trace_kwargs.get("id") == "std-trace-err"
+        assert self.span_trace_id(self.exported_generation()) == resolve_trace_id("std-trace-err")
         # status_message should be set for error traces
-        assert self.last_trace_kwargs.get("status_message") is not None
+        assert self.exported_generation().attributes["langfuse.observation.level"] == "ERROR"
 
     def test_log_langfuse_v2_explicit_trace_id_takes_priority_over_session_id(self):
         """
@@ -623,7 +640,7 @@ class TestLangfuseUsageDetails(unittest.TestCase):
         """
         payload = self._build_standard_logging_payload()
         kwargs = self._build_langfuse_kwargs(payload)
-        self.last_trace_kwargs = {}
+        self.use_real_langfuse_client()
 
         with patch(
             "litellm.integrations.langfuse.langfuse._add_prompt_to_generation_params",
@@ -654,9 +671,9 @@ class TestLangfuseUsageDetails(unittest.TestCase):
             )
 
         # Explicit trace_id must take priority
-        assert self.last_trace_kwargs.get("id") == "explicit-trace-id-777"
+        assert self.span_trace_id(self.exported_generation()) == resolve_trace_id("explicit-trace-id-777")
         # session_id must still be set for session grouping
-        assert self.last_trace_kwargs.get("session_id") == "session-999"
+        assert self.exported_generation().attributes["session.id"] == "session-999"
 
 
 def test_failure_handler_langfuse_kwargs_excludes_original_response():
