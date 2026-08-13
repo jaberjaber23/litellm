@@ -42,9 +42,12 @@ class LangfuseInMemoryCache(InMemoryCache):
             #########################################################
             # Clean up Langfuse initialized clients
             #########################################################
+            from litellm.integrations.langfuse.langfuse_v4_client import (
+                shutdown_langfuse_client,
+            )
+
             litellm.initialized_langfuse_clients -= 1
-            _created_langfuse_logger.Langfuse.flush()
-            _created_langfuse_logger.Langfuse.shutdown()
+            shutdown_langfuse_client(_created_langfuse_logger.Langfuse)
 
         #########################################################
         # Call parent class to remove key from cache

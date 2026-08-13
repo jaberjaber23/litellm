@@ -250,7 +250,23 @@ class LangFuseLogger:
             raise Exception(
                 f"Max langfuse clients reached: {litellm.initialized_langfuse_clients} is greater than {MAX_LANGFUSE_INITIALIZED_CLIENTS}"
             )
-        langfuse_client: Final = Langfuse(**parameters)
+        from litellm.integrations.langfuse.langfuse_v4_client import (
+            build_isolated_tracer_provider,
+            evict_stale_langfuse_resources,
+        )
+
+        evict_stale_langfuse_resources(
+            public_key=parameters.get("public_key"),
+            secret_key=parameters.get("secret_key"),
+            base_url=parameters.get("host"),
+        )
+        langfuse_client: Final = Langfuse(
+            **parameters,
+            tracer_provider=build_isolated_tracer_provider(
+                environment=os.getenv("LANGFUSE_TRACING_ENVIRONMENT"),
+                release=parameters.get("release"),
+            ),
+        )
         litellm.initialized_langfuse_clients += 1
         verbose_logger.debug("Created langfuse client number %s", litellm.initialized_langfuse_clients)
         return langfuse_client
