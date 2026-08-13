@@ -1,19 +1,34 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Final
 
 import opentelemetry.trace as otel_trace
-from langfuse import LangfuseGeneration, LangfuseSpan
+from langfuse import Langfuse, LangfuseGeneration, LangfuseSpan, propagate_attributes
 
 if TYPE_CHECKING:
-    from langfuse import Langfuse
-
     Span = Any
 else:
     Span = Any
 
+__all__ = [
+    "AS_ROOT_ATTRIBUTE",
+    "RELEASE_ATTRIBUTE",
+    "open_trace_context",
+    "propagate_attributes",
+    "resolve_observation_id",
+    "resolve_trace_id",
+    "start_child_span",
+    "start_generation",
+    "to_unix_nanos",
+]
+
 AS_ROOT_ATTRIBUTE: Final = "langfuse.internal.as_root"
+RELEASE_ATTRIBUTE: Final = "langfuse.release"
+_TRACE_ID_PATTERN: Final = re.compile(r"^[0-9a-f]{32}$")
+_OBSERVATION_ID_PATTERN: Final = re.compile(r"^[0-9a-f]{16}$")
 
 
 def to_unix_nanos(value: datetime | None) -> int | None:
@@ -21,6 +36,29 @@ def to_unix_nanos(value: datetime | None) -> int | None:
     if value is None:
         return None
     return int(value.timestamp() * 1_000_000_000)
+
+
+def resolve_trace_id(trace_id: str | None) -> str:
+    """Map litellm's trace id onto the 32 lowercase hex characters v4 requires.
+
+    Anything else raises inside the SDK rather than being ignored, so a plain
+    uuid is dash-stripped and any other identifier is hashed deterministically,
+    which keeps repeat calls with the same id on the same trace.
+    """
+    normalized: Final = trace_id.lower().replace("-", "") if trace_id else ""
+    if _TRACE_ID_PATTERN.match(normalized):
+        return normalized
+    return Langfuse.create_trace_id(seed=trace_id) if trace_id else Langfuse.create_trace_id()
+
+
+def resolve_observation_id(observation_id: str | None) -> str | None:
+    """Same for a caller-supplied parent, which v4 requires to be 16 hex characters."""
+    normalized: Final = observation_id.lower().replace("-", "") if observation_id else ""
+    if not normalized:
+        return None
+    if _OBSERVATION_ID_PATTERN.match(normalized):
+        return normalized
+    return sha256(normalized.encode("utf-8")).digest()[:8].hex()
 
 
 def open_trace_context(
@@ -50,6 +88,7 @@ def start_generation(
     name: str,
     start_time: datetime | None,
     claim_trace_root: bool,
+    release: str | None = None,
     attributes: dict[str, Any],
 ) -> LangfuseGeneration:
     """Create a generation whose start time is when the model call began.
@@ -63,6 +102,8 @@ def start_generation(
     )
     if claim_trace_root:
         otel_span.set_attribute(AS_ROOT_ATTRIBUTE, True)
+    if release is not None:
+        otel_span.set_attribute(RELEASE_ATTRIBUTE, release)
     return LangfuseGeneration(otel_span=otel_span, langfuse_client=client, **attributes)
 
 
