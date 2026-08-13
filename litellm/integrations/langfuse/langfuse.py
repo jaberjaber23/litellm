@@ -686,6 +686,7 @@ class LangFuseLogger:
             generation_id = None
             usage = None
             usage_details = None
+            cost_details = None
             if response_obj is not None:
                 if hasattr(response_obj, "id") and response_obj.get("id", None) is not None:
                     generation_id = litellm.utils.get_logging_id(start_time, response_obj)
@@ -704,8 +705,9 @@ class LangFuseLogger:
                     usage = {
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": completion_tokens,
-                        "total_cost": cost if self._supports_costs() else None,
+                        "total_cost": cost,
                     }
+                    cost_details = {"total": cost} if isinstance(cost, (int, float)) else None
                     # According to langfuse documentation: "the input value must be reduced by the number of cache_read_input_tokens"
                     input_tokens: Final = prompt_tokens - cache_read_input_tokens
                     usage_details = LangfuseUsageDetails(
@@ -748,6 +750,7 @@ class LangFuseLogger:
                 "output": output if not mask_output else "redacted-by-litellm",
                 "usage": usage,
                 "usage_details": usage_details,
+                "cost_details": cost_details,
                 # mutable-ok: langfuse serializes this payload, a proxy is not json-encodable
                 "metadata": {**(trace_params.get("metadata") or {}), **log_requester_metadata(clean_metadata)},
                 "level": level,
@@ -770,8 +773,7 @@ class LangFuseLogger:
 
             generation_params["completion_start_time"] = kwargs.get("completion_start_time", None)
 
-            # langfuse ships in the proxy-runtime extra, so this module must stay importable
-            # without it; every symbol below comes from the v4 SDK
+            # langfuse ships in the proxy-runtime extra, so this module must import cleanly without it
             from litellm.integrations.langfuse.langfuse_sdk import (
                 open_trace_context,
                 propagate_attributes,
@@ -784,8 +786,6 @@ class LangFuseLogger:
             resolved_trace_id: Final = resolve_trace_id(trace_id)
 
             with propagate_attributes(**_trace_attributes_for_propagation(trace_params)):
-                # inside the context, so the propagated trace attributes are part of the
-                # context the observations are started from
                 trace_context, claim_trace_root = open_trace_context(
                     client=self.Langfuse,
                     trace_id=resolved_trace_id,

@@ -109,7 +109,15 @@ def langfuse_client_init(
         cert=os.getenv("SSL_CERTIFICATE", litellm.ssl_certificate),
     )
 
-    client: Final = Langfuse(**parameters)
+    from .langfuse_sdk import build_isolated_tracer_provider, evict_stale_langfuse_resources
+
+    evict_stale_langfuse_resources(public_key=public_key, secret_key=secret_key, base_url=langfuse_host)
+    client: Final = Langfuse(
+        **parameters,
+        tracer_provider=build_isolated_tracer_provider(
+            environment=os.getenv("LANGFUSE_TRACING_ENVIRONMENT"), release=langfuse_release
+        ),
+    )
 
     return client
 

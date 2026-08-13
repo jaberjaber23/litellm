@@ -83,6 +83,34 @@ def test_generation_records_the_model_call_window_not_the_callback(client):
     )
 
 
+@pytest.mark.parametrize(
+    "supplied",
+    [1709294400.5, datetime(2024, 3, 1, 12, 0, 0, 500000, tzinfo=timezone.utc)],
+    ids=["unix-seconds-float", "datetime"],
+)
+def test_timestamps_accept_both_shapes_guardrails_and_callbacks_use(supplied):
+    """Guardrail entries carry unix seconds as floats, the callback carries datetimes."""
+    assert to_unix_nanos(supplied) == 1709294400500000000
+
+
+def test_guardrail_span_with_float_timestamps_does_not_break_the_generation(client):
+    """A guardrail entry must not take the whole event down with it."""
+    lf, exporter = client
+    context, claim_root = open_trace_context(client=lf, trace_id="9" * 32, parent_observation_id=None)
+    guardrail_start = 1709294400.0
+    start_child_span(
+        client=lf, context=context, name="guardrail", start_time=guardrail_start, attributes={}
+    ).end(end_time=to_unix_nanos(guardrail_start + 2))
+    start_generation(
+        client=lf, context=context, name="gen", start_time=CALL_START, claim_trace_root=claim_root, attributes={}
+    ).end(end_time=to_unix_nanos(CALL_END))
+    lf.flush()
+
+    guardrail = _only_span(exporter, "guardrail")
+    assert (guardrail.end_time - guardrail.start_time) == 2 * 1_000_000_000
+    assert _only_span(exporter, "gen") is not None
+
+
 def test_generation_claims_trace_root_only_without_a_real_parent(client):
     lf, exporter = client
     context, claim_root = open_trace_context(client=lf, trace_id="b" * 32, parent_observation_id=None)

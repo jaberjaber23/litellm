@@ -35,11 +35,16 @@ _TRACE_ID_PATTERN: Final = re.compile(r"^[0-9a-f]{32}$")
 _OBSERVATION_ID_PATTERN: Final = re.compile(r"^[0-9a-f]{16}$")
 
 
-def to_unix_nanos(value: datetime | None) -> int | None:
-    """Langfuse v4 takes OTel timestamps, which are integer nanoseconds since the epoch."""
+def to_unix_nanos(value: datetime | float | None) -> int | None:
+    """Langfuse v4 takes OTel timestamps, which are integer nanoseconds since the epoch.
+
+    Guardrail entries carry unix seconds as floats rather than datetimes, so both
+    shapes have to convert; the v2 SDK accepted either through a pydantic model.
+    """
     if value is None:
         return None
-    return int(value.timestamp() * 1_000_000_000)
+    seconds: Final = value.timestamp() if isinstance(value, datetime) else float(value)
+    return int(seconds * 1_000_000_000)
 
 
 def resolve_trace_id(trace_id: str | None) -> str:
@@ -90,7 +95,7 @@ def start_generation(
     client: Langfuse,
     context: Context,
     name: str,
-    start_time: datetime | None,
+    start_time: datetime | float | None,
     claim_trace_root: bool,
     release: str | None = None,
     attributes: Mapping[str, object],
@@ -119,7 +124,7 @@ def start_child_span(
     client: Langfuse,
     context: Context,
     name: str,
-    start_time: datetime | None,
+    start_time: datetime | float | None,
     attributes: Mapping[str, object],
 ) -> LangfuseSpan:
     """Create a sibling observation inside the same trace, keeping its own window."""
