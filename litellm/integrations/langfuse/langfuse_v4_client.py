@@ -50,13 +50,13 @@ def evict_stale_langfuse_resources(*, public_key: str | None, secret_key: str | 
     """
     if not public_key:
         return
-    with LangfuseResourceManager._lock:  # registry has no public accessor
-        cached: Final = LangfuseResourceManager._instances.get(public_key)
+    with LangfuseResourceManager._lock:  # pyright: ignore[reportPrivateUsage]  # registry has no public accessor
+        cached: Final = LangfuseResourceManager._instances.get(public_key)  # pyright: ignore[reportPrivateUsage]  # registry has no public accessor
         if cached is None:
             return
         if getattr(cached, "secret_key", None) == secret_key and getattr(cached, "base_url", None) == base_url:
             return
-        LangfuseResourceManager._instances.pop(public_key, None)
+        LangfuseResourceManager._instances.pop(public_key, None)  # pyright: ignore[reportPrivateUsage]  # registry has no public accessor
 
 
 def shutdown_langfuse_client(client: Langfuse) -> None:
@@ -77,6 +77,6 @@ def shutdown_langfuse_client(client: Langfuse) -> None:
     public_key: Final = getattr(resources, "public_key", None)
     if public_key is None:
         return
-    with LangfuseResourceManager._lock:  # registry has no public accessor
-        if LangfuseResourceManager._instances.get(public_key) is resources:
-            LangfuseResourceManager._instances.pop(public_key, None)
+    with LangfuseResourceManager._lock:  # pyright: ignore[reportPrivateUsage]  # registry has no public accessor
+        if LangfuseResourceManager._instances.get(public_key) is resources:  # pyright: ignore[reportPrivateUsage]  # registry has no public accessor
+            LangfuseResourceManager._instances.pop(public_key, None)  # pyright: ignore[reportPrivateUsage]  # registry has no public accessor  # pyright: ignore[reportPrivateUsage]  # registry has no public accessor

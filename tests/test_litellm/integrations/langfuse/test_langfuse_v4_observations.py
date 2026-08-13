@@ -133,6 +133,37 @@ def test_release_is_carried_on_the_root_observation(client):
     assert _only_span(exporter, "gen").attributes[RELEASE_ATTRIBUTE] == "v1.2.3"
 
 
+def test_request_release_beats_the_client_wide_release(monkeypatch):
+    """A client configured with its own release must not overwrite trace_release."""
+    monkeypatch.setenv("LANGFUSE_RELEASE", "client-wide-release")
+    LangfuseResourceManager._instances.pop("pk-release-test", None)
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    lf = Langfuse(
+        public_key="pk-release-test",
+        secret_key="sk-release-test",
+        host="http://127.0.0.1:1",
+        release="client-wide-release",
+        tracer_provider=provider,
+        span_exporter=exporter,
+    )
+    context, claim_root = open_trace_context(client=lf, trace_id="f" * 32, parent_observation_id=None)
+    start_generation(
+        client=lf,
+        context=context,
+        name="gen",
+        start_time=CALL_START,
+        claim_trace_root=claim_root,
+        release="per-request-release",
+        attributes={},
+    ).end()
+    lf.flush()
+    LangfuseResourceManager._instances.pop("pk-release-test", None)
+
+    assert _only_span(exporter, "gen").attributes[RELEASE_ATTRIBUTE] == "per-request-release"
+
+
 @pytest.mark.parametrize(
     "supplied, expected",
     [

@@ -72,7 +72,7 @@ def open_trace_context(
     SDK path compensates by marking the span as root and this path must do the
     same.
     """
-    remote_parent: Final = client._create_remote_parent_span(  # no public equivalent in v4
+    remote_parent: Final = client._create_remote_parent_span(  # pyright: ignore[reportPrivateUsage]  # no public equivalent in v4
         trace_id=trace_id, parent_span_id=parent_observation_id
     )
     return otel_trace.set_span_in_context(remote_parent), parent_observation_id is None
@@ -94,14 +94,17 @@ def start_generation(
     own OTel tracer, which does. Langfuse documents this route for backdated
     ingestion.
     """
-    otel_span: Final = client._otel_tracer.start_span(  # only route to a historical start time
+    otel_span: Final = client._otel_tracer.start_span(  # pyright: ignore[reportPrivateUsage]  # only route to a historical start time
         name=name, context=context, start_time=to_unix_nanos(start_time)
     )
     if claim_trace_root:
         otel_span.set_attribute(AS_ROOT_ATTRIBUTE, True)
+    generation: Final = LangfuseGeneration(otel_span=otel_span, langfuse_client=client, **attributes)
     if release is not None:
+        # after the wrapper, which stamps the client-wide release and would otherwise
+        # overwrite the release this request asked for
         otel_span.set_attribute(RELEASE_ATTRIBUTE, release)
-    return LangfuseGeneration(otel_span=otel_span, langfuse_client=client, **attributes)
+    return generation
 
 
 def start_child_span(
@@ -113,7 +116,7 @@ def start_child_span(
     attributes: Mapping[str, object],
 ) -> LangfuseSpan:
     """Create a sibling observation inside the same trace, keeping its own window."""
-    otel_span: Final = client._otel_tracer.start_span(  # only route to a historical start time
+    otel_span: Final = client._otel_tracer.start_span(  # pyright: ignore[reportPrivateUsage]  # only route to a historical start time
         name=name, context=context, start_time=to_unix_nanos(start_time)
     )
     return LangfuseSpan(otel_span=otel_span, langfuse_client=client, **attributes)
