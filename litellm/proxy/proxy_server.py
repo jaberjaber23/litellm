@@ -1174,6 +1174,10 @@ async def proxy_startup_event(app: FastAPI):
         prisma_client=prisma_client,
     )
 
+    # Not gated on the database: concurrency is bounded per worker regardless, and
+    # a registered gauge always exposes a value, so skipping this would publish 0.
+    publish_global_max_parallel_requests(general_settings.get("global_max_parallel_requests"))
+
     ### START BATCH WRITING DB + CHECKING NEW MODELS###
     if prisma_client is not None:
         await ProxyStartupEvent.initialize_scheduled_background_jobs(
@@ -6171,6 +6175,7 @@ class ProxyConfig:
 
         if "global_max_parallel_requests" in _general_settings:
             general_settings["global_max_parallel_requests"] = _general_settings["global_max_parallel_requests"]
+            publish_global_max_parallel_requests(general_settings["global_max_parallel_requests"])
 
         ## ALERTING ARGS ##
         if "alerting_args" in _general_settings:
@@ -8945,7 +8950,6 @@ class ProxyStartupEvent:
 
         # Registered before start so the first run of every job is observed.
         ScheduledJobMetricsListener().register(scheduler)
-        publish_global_max_parallel_requests(general_settings.get("global_max_parallel_requests"))
 
         # Start the scheduler immediately without processing backlogs
         scheduler.start(paused=False)
