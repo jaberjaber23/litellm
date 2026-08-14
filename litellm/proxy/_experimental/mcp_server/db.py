@@ -1058,18 +1058,21 @@ async def clear_mcp_server_oauth_token(
     if existing is None:
         return None
 
-    existing_creds: Final = _credentials_blob_to_mutable_dict(existing.credentials) if existing.credentials else {}
-    if not _MINTED_TOKEN_CREDENTIAL_FIELDS & existing_creds.keys():
+    existing_creds: Final = _credentials_blob_to_mutable_dict(existing.credentials) if existing.credentials else None
+    if existing_creds is None or not _MINTED_TOKEN_CREDENTIAL_FIELDS & existing_creds.keys():
         _decrypt_env_vars_on_returned_row(existing)
         return ClearedMCPServerOAuthToken(server=existing, had_token=False)
 
-    remaining: Final = {
+    remaining: Final = {  # mutable-ok: safe_dumps serializes a plain dict and str()s a mapping view
         key: value for key, value in existing_creds.items() if key not in _MINTED_TOKEN_CREDENTIAL_FIELDS
     }
     updated: Final = await _db_update_mcp_server_row(
         prisma_client,
         server_id,
-        {"credentials": safe_dumps(remaining), "updated_by": touched_by},
+        {  # mutable-ok: prisma update-inputs must be plain dicts
+            "credentials": safe_dumps(remaining),
+            "updated_by": touched_by,
+        },
     )
     _decrypt_env_vars_on_returned_row(updated)
     return ClearedMCPServerOAuthToken(server=updated, had_token=True)
@@ -1524,7 +1527,7 @@ async def purge_user_oauth_credentials_for_server(
     invalidate_token_cache is injectable for tests; it defaults to the manager's shared
     invalidate_user_oauth_token_cache, the single invalidation point for per-user tokens."""
     rows: Final = await _db_find_user_credential_rows(prisma_client, {"server_id": server_id})
-    oauth_rows: Final = [row for row in rows if _decode_oauth_payload(row.credential_b64) is not None]
+    oauth_rows: Final = tuple(row for row in rows if _decode_oauth_payload(row.credential_b64) is not None)
     if not oauth_rows:
         return 0
     if invalidate_token_cache is None:
@@ -1540,7 +1543,10 @@ async def purge_user_oauth_credentials_for_server(
     # invalidation for a row that survived the delete only costs that user's next resolve a DB read.
     try:
         deleted_count: Final = await _user_credential_actions(prisma_client).delete_many(
-            where={"server_id": server_id, "user_id": {"in": [row.user_id for row in oauth_rows]}}
+            where={  # mutable-ok: prisma where-inputs must be plain dicts
+                "server_id": server_id,
+                "user_id": {"in": [row.user_id for row in oauth_rows]},  # mutable-ok: prisma `in` takes a plain list
+            }
         )
     finally:
         for row in oauth_rows:

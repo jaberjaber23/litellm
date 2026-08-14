@@ -2053,7 +2053,7 @@ if MCP_AVAILABLE:
         if LitellmUserRoles.PROXY_ADMIN != user_api_key_dict.user_role:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail={
+                detail={  # mutable-ok: HTTPException details are plain dicts across every management route
                     "error": (
                         "Call not allowed to clear the MCP server OAuth token. User is not a proxy admin. "
                         "route=DELETE /v1/mcp/server/{server_id}/oauth-token"
@@ -2069,7 +2069,7 @@ if MCP_AVAILABLE:
         if cleared is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail={"error": f"MCP Server not found, passed server_id={server_id}"},
+                detail={"error": f"MCP Server not found, passed server_id={server_id}"},  # mutable-ok: plain dict
             )
 
         # The in-memory stores are reconciled even when the purge raises. The server row has already
