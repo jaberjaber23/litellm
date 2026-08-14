@@ -802,7 +802,7 @@ class LangFuseLogger:
                 start_generation(
                     client=self.Langfuse,
                     context=trace_context,
-                    name=generation_params.pop("name"),
+                    name=generation_params["name"],
                     start_time=start_time,
                     claim_trace_root=claim_trace_root,
                     release=trace_params.get("release"),

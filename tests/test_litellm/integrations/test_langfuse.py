@@ -75,12 +75,8 @@ class TestLangfuseUsageDetails(unittest.TestCase):
         import langfuse as _langfuse_module
 
         self.real_langfuse_class = _langfuse_module.Langfuse
-        self.langfuse_class_patcher = patch(
-            "langfuse.Langfuse", return_value=self.mock_langfuse_client
-        )
-        self.langfuse_class_patcher.start()
-        self.addCleanup(self.langfuse_class_patcher.stop)
-
+        # no patching: the host above is unreachable, so a real client is cheap to build
+        # and each test swaps in the client it wants
         self.logger = LangFuseLogger()
 
         # Explicitly set the Langfuse client to our mock
