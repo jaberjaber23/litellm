@@ -18,7 +18,11 @@ import litellm.litellm_core_utils.litellm_logging
 import litellm.types
 from litellm._logging import verbose_logger, verbose_proxy_logger
 from litellm.caching.caching import DualCache
-from litellm.constants import HOURS_IN_A_DAY, SLACK_DAILY_REPORT_LOCK_ID
+from litellm.constants import (
+    HOURS_IN_A_DAY,
+    SLACK_DAILY_REPORT_LOCK_ID,
+    SLACK_MODEL_DEPRECATION_ALERT_LOCK_ID,
+)
 from litellm.integrations.custom_batch_logger import CustomBatchLogger
 from litellm.integrations.SlackAlerting.budget_alert_types import get_budget_alert_type
 from litellm.integrations.SlackAlerting.hanging_request_check import (
@@ -1088,15 +1092,30 @@ Model Info:
         return True
 
     async def run_scheduled_deprecation_check(
-        self, get_llm_router: Callable[[], Router | None] = _proxy_llm_router
+        self,
+        get_llm_router: Callable[[], Router | None] = _proxy_llm_router,
+        pod_lock_manager: "PodLockManager | None" = None,
     ) -> None:
-        """Alert once the router is loaded and the alert is on, then daily, re-reading both each pass"""
+        """Alert once the router is loaded and the alert is on, then daily, re-reading both each pass
+
+        `pod_lock_manager` dedupes the alert across a multi-pod fleet: only the pod that acquires
+        the daily lock sends, so the Slack webhook receives one message per interval, not N.
+        """
         while True:
             if (llm_router := get_llm_router()) is None or not self._deprecation_alerts_enabled():
                 await asyncio.sleep(DEPRECATION_IDLE_POLL_SECONDS)
                 continue
             try:
-                await self.send_model_deprecation_alert(llm_router=llm_router)
+                if (
+                    pod_lock_manager is None
+                    or await pod_lock_manager.acquire_lock(
+                        cronjob_id=SLACK_MODEL_DEPRECATION_ALERT_LOCK_ID,
+                        ttl=DEFAULT_DEPRECATION_CHECK_INTERVAL_SECONDS,
+                        allow_reentrant=False,
+                    )
+                    is not False
+                ):
+                    await self.send_model_deprecation_alert(llm_router=llm_router)
             except Exception as e:  # noqa: BLE001  # a failed alert must not kill the daily loop
                 verbose_proxy_logger.exception("Error in model deprecation alert loop: %s", e)
             await asyncio.sleep(DEFAULT_DEPRECATION_CHECK_INTERVAL_SECONDS)

@@ -202,3 +202,136 @@ async def test_should_wait_for_the_router_instead_of_sleeping_a_full_day(monkeyp
     ]
     mock_send_alert.assert_awaited_once()
     assert "dead-alias" in mock_send_alert.await_args.kwargs["message"]
+
+
+@pytest.mark.asyncio
+async def test_should_skip_alert_when_pod_lock_is_held_by_another_pod(monkeypatch):
+    """Multi-pod fleets must send exactly one Slack alert per interval, not one per replica"""
+    from litellm.constants import SLACK_MODEL_DEPRECATION_ALERT_LOCK_ID
+
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {"dead-model": {"deprecation_date": "2020-01-01", "litellm_provider": "openai"}},
+    )
+    alerting = SlackAlerting(
+        alerting=["slack"], alert_types=[AlertType.model_deprecation_warnings]
+    )
+    router = _make_router(
+        [
+            {
+                "model_name": "dead-alias",
+                "litellm_params": {"model": "dead-model"},
+                "model_info": {"id": "1"},
+            }
+        ]
+    )
+
+    pod_lock_manager = MagicMock()
+    pod_lock_manager.acquire_lock = AsyncMock(return_value=False)
+
+    async def stop_after_one_pass(_seconds):
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(alerting, "send_alert", new_callable=AsyncMock) as mock_send_alert,
+        patch(
+            "litellm.integrations.SlackAlerting.slack_alerting.asyncio.sleep",
+            side_effect=stop_after_one_pass,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await alerting.run_scheduled_deprecation_check(
+            get_llm_router=lambda: router,
+            pod_lock_manager=pod_lock_manager,
+        )
+
+    mock_send_alert.assert_not_awaited()
+    pod_lock_manager.acquire_lock.assert_awaited_once_with(
+        cronjob_id=SLACK_MODEL_DEPRECATION_ALERT_LOCK_ID,
+        ttl=DEFAULT_DEPRECATION_CHECK_INTERVAL_SECONDS,
+        allow_reentrant=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_should_send_alert_when_pod_lock_is_acquired(monkeypatch):
+    """The pod that wins the daily lock is the one that actually posts to Slack"""
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {"dead-model": {"deprecation_date": "2020-01-01", "litellm_provider": "openai"}},
+    )
+    alerting = SlackAlerting(
+        alerting=["slack"], alert_types=[AlertType.model_deprecation_warnings]
+    )
+    router = _make_router(
+        [
+            {
+                "model_name": "dead-alias",
+                "litellm_params": {"model": "dead-model"},
+                "model_info": {"id": "1"},
+            }
+        ]
+    )
+
+    pod_lock_manager = MagicMock()
+    pod_lock_manager.acquire_lock = AsyncMock(return_value=True)
+
+    async def stop_after_one_pass(_seconds):
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(alerting, "send_alert", new_callable=AsyncMock) as mock_send_alert,
+        patch(
+            "litellm.integrations.SlackAlerting.slack_alerting.asyncio.sleep",
+            side_effect=stop_after_one_pass,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await alerting.run_scheduled_deprecation_check(
+            get_llm_router=lambda: router,
+            pod_lock_manager=pod_lock_manager,
+        )
+
+    mock_send_alert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_should_send_alert_when_no_pod_lock_manager_is_configured(monkeypatch):
+    """Deployments without Redis have no lock manager, so the loop must still send"""
+    monkeypatch.setattr(
+        litellm,
+        "model_cost",
+        {"dead-model": {"deprecation_date": "2020-01-01", "litellm_provider": "openai"}},
+    )
+    alerting = SlackAlerting(
+        alerting=["slack"], alert_types=[AlertType.model_deprecation_warnings]
+    )
+    router = _make_router(
+        [
+            {
+                "model_name": "dead-alias",
+                "litellm_params": {"model": "dead-model"},
+                "model_info": {"id": "1"},
+            }
+        ]
+    )
+
+    async def stop_after_one_pass(_seconds):
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(alerting, "send_alert", new_callable=AsyncMock) as mock_send_alert,
+        patch(
+            "litellm.integrations.SlackAlerting.slack_alerting.asyncio.sleep",
+            side_effect=stop_after_one_pass,
+        ),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await alerting.run_scheduled_deprecation_check(
+            get_llm_router=lambda: router,
+            pod_lock_manager=None,
+        )
+
+    mock_send_alert.assert_awaited_once()
