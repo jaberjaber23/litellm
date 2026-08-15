@@ -603,7 +603,7 @@ describe("CreateKey", () => {
       });
 
       await waitFor(() => {
-        expect(screen.getByTestId("org-dropdown")).not.toBeDisabled();
+        expect(screen.getByTestId("org-dropdown")).toBeEnabled();
       });
     });
 
